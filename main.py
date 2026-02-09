@@ -89,16 +89,19 @@ async def get_quote(symbol: str = "RELIANCE.NS"):
 
 
 @app.get("/api/chart")
-async def get_chart(symbol: str = "RELIANCE.NS", period: str = "1y", interval: str = "1h"):
+async def get_chart(symbol: str = "RELIANCE.NS", period: str = "1y", interval: str = "1h", start: str = None, end: str = None):
     """Get historical chart data for a symbol"""
-    cache_key = f"chart_{symbol}_{period}_{interval}"
+    cache_key = f"chart_{symbol}_{period}_{interval}_{start}_{end}"
     cached = get_cached(cache_key, CACHE_TTL_CHART)
     if cached:
         return cached
 
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period=period, interval=interval)
+        if start:
+            hist = ticker.history(start=start, end=end, interval=interval)
+        else:
+            hist = ticker.history(period=period, interval=interval)
         
         if len(hist) == 0:
             return {"error": f"No data found for {symbol}"}
@@ -141,12 +144,12 @@ async def get_chart(symbol: str = "RELIANCE.NS", period: str = "1y", interval: s
 
 
 @app.get("/api/finance")
-async def get_finance(symbol: str = "RELIANCE.NS", type: str = "chart"):
+async def get_finance(symbol: str = "RELIANCE.NS", type: str = "chart", start: str = None, end: str = None):
     """Combined endpoint - use type=quote for current price, type=chart for historical"""
     if type == "quote":
         return await get_quote(symbol)
     else:
-        return await get_chart(symbol)
+        return await get_chart(symbol, start=start, end=end)
 
 
 CACHE_TTL_NEWS = 600  # 10 minutes for news
