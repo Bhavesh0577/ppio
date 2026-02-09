@@ -580,190 +580,182 @@ async def get_screener(screen: str = "most_actives"):
         return {"error": str(e), "screen": screen, "items": []}
 
 
-CACHE_TTL_HEATMAP = 60  # 60 seconds for near-live data
+# ─── /api/nse-heatmap ───────────────────────────────────────────
+# Separate endpoint using nsetools (direct NSE API).
+# Single call nse.get_stock_quote_in_index() returns ALL stocks in an index
+# with live prices, % change, volume — no per-ticker bottleneck.
+# Keeps the existing /api/heatmap (yfinance) completely untouched.
+# ─────────────────────────────────────────────────────────────────
 
-# Hardcoded NIFTY sector-index → constituent tickers mapping
-# (nsetools get_index_quote is unreliable on servers, so we use yfinance bulk download)
-SECTOR_INDICES = {
-    "NIFTY 50": {
-        "Financial Services": ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "SBIN.NS", "AXISBANK.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "HDFCLIFE.NS", "SBILIFE.NS", "INDUSINDBK.NS", "SHRIRAMFIN.NS"],
-        "IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIMindtree.NS"],
-        "Energy": ["RELIANCE.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS", "ADANIENSOL.NS", "BPCL.NS", "TATAPOWER.NS"],
-        "Automobile": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "HEROMOTOCO.NS"],
-        "FMCG": ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "GODREJCP.NS"],
-        "Metals & Mining": ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "ADANIENT.NS", "COALINDIA.NS"],
-        "Pharma & Healthcare": ["SUNPHARMA.NS", "DRREDDY.NS", "DIVISLAB.NS", "CIPLA.NS", "APOLLOHOSP.NS"],
-        "Construction": ["ULTRACEMCO.NS", "GRASIM.NS", "ADANIPORTS.NS", "LT.NS"],
-        "Telecom & Media": ["BHARTIARTL.NS"],
-        "Consumer Durables": ["TITAN.NS", "ASIANPAINT.NS"],
-    },
+CACHE_TTL_NSE_HEATMAP = 60  # 60s
+
+# Sector grouping for NIFTY 50 stocks (nsetools returns flat list, we group manually)
+_NIFTY50_SECTOR = {
+    "HDFCBANK": "Financial Services", "ICICIBANK": "Financial Services",
+    "KOTAKBANK": "Financial Services", "SBIN": "Financial Services",
+    "AXISBANK": "Financial Services", "BAJFINANCE": "Financial Services",
+    "BAJAJFINSV": "Financial Services", "HDFCLIFE": "Financial Services",
+    "SBILIFE": "Financial Services", "INDUSINDBK": "Financial Services",
+    "SHRIRAMFIN": "Financial Services", "JIOFINANCE": "Financial Services",
+    "TCS": "IT", "INFY": "IT", "HCLTECH": "IT", "WIPRO": "IT",
+    "TECHM": "IT", "LTIM": "IT",
+    "RELIANCE": "Energy", "ONGC": "Energy", "NTPC": "Energy",
+    "POWERGRID": "Energy", "ADANIENSOL": "Energy", "BPCL": "Energy",
+    "TATAPOWER": "Energy",
+    "TATAMOTORS": "Automobile", "M&M": "Automobile", "MARUTI": "Automobile",
+    "BAJAJ-AUTO": "Automobile", "EICHERMOT": "Automobile", "HEROMOTOCO": "Automobile",
+    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
+    "BRITANNIA": "FMCG", "TATACONSUM": "FMCG", "GODREJCP": "FMCG",
+    "TATASTEEL": "Metals & Mining", "JSWSTEEL": "Metals & Mining",
+    "HINDALCO": "Metals & Mining", "ADANIENT": "Metals & Mining",
+    "COALINDIA": "Metals & Mining",
+    "SUNPHARMA": "Pharma & Healthcare", "DRREDDY": "Pharma & Healthcare",
+    "DIVISLAB": "Pharma & Healthcare", "CIPLA": "Pharma & Healthcare",
+    "APOLLOHOSP": "Pharma & Healthcare",
+    "ULTRACEMCO": "Construction & Infra", "GRASIM": "Construction & Infra",
+    "ADANIPORTS": "Construction & Infra", "LT": "Construction & Infra",
+    "BHARTIARTL": "Telecom & Media",
+    "TITAN": "Consumer Durables", "ASIANPAINT": "Consumer Durables",
+    "BEL": "Defence & PSU", "HAL": "Defence & PSU",
+    "TRENT": "Retail",
+}
+
+_SECTOR_SUB = {
     "NIFTY BANK": {
-        "Private Banks": ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "INDUSINDBK.NS", "BANDHANBNK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "AUBANK.NS"],
-        "PSU Banks": ["SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS"],
+        "HDFCBANK": "Private Banks", "ICICIBANK": "Private Banks",
+        "KOTAKBANK": "Private Banks", "AXISBANK": "Private Banks",
+        "INDUSINDBK": "Private Banks", "BANDHANBNK": "Private Banks",
+        "FEDERALBNK": "Private Banks", "IDFCFIRSTB": "Private Banks",
+        "AUBANK": "Private Banks", "YESBANK": "Private Banks",
+        "SBIN": "PSU Banks", "BANKBARODA": "PSU Banks",
+        "PNB": "PSU Banks", "CANBK": "PSU Banks",
     },
     "NIFTY IT": {
-        "Large Cap IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS"],
-        "Mid Cap IT": ["LTIMindtree.NS", "MPHASIS.NS", "COFORGE.NS", "PERSISTENT.NS", "LTTS.NS"],
+        "TCS": "Large Cap", "INFY": "Large Cap", "HCLTECH": "Large Cap",
+        "WIPRO": "Large Cap", "TECHM": "Large Cap",
+        "LTIM": "Mid Cap", "MPHASIS": "Mid Cap", "COFORGE": "Mid Cap",
+        "PERSISTENT": "Mid Cap", "LTTS": "Mid Cap",
     },
     "NIFTY PHARMA": {
-        "Large Cap Pharma": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "AUROPHARMA.NS"],
-        "Mid Cap Pharma": ["LUPIN.NS", "BIOCON.NS", "TORNTPHARM.NS", "ALKEM.NS", "IPCALAB.NS"],
-    },
-    "NIFTY AUTO": {
-        "Passenger Vehicles": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS"],
-        "Two Wheelers": ["BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "TVSMOTOR.NS"],
-        "Auto Ancillaries": ["MOTHERSON.NS", "BOSCHLTD.NS", "BHARATFORG.NS", "MRF.NS"],
-    },
-    "NIFTY FMCG": {
-        "Food & Beverages": ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS"],
-        "Personal Care": ["GODREJCP.NS", "DABUR.NS", "MARICO.NS", "COLPAL.NS"],
-        "Others": ["PGHH.NS", "VBL.NS", "UBL.NS"],
-    },
-    "NIFTY ENERGY": {
-        "Oil & Gas": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS"],
-        "Power": ["NTPC.NS", "POWERGRID.NS", "TATAPOWER.NS", "ADANIENSOL.NS", "ADANIGREEN.NS"],
-    },
-    "NIFTY METAL": {
-        "Steel": ["TATASTEEL.NS", "JSWSTEEL.NS", "SAIL.NS", "JINDALSTEL.NS"],
-        "Non-Ferrous": ["HINDALCO.NS", "VEDL.NS", "NATIONALUM.NS", "NMDC.NS"],
-    },
-    "NIFTY REALTY": {
-        "Large Cap Realty": ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS"],
-        "Mid Cap Realty": ["PHOENIXLTD.NS", "BRIGADE.NS", "LODHA.NS", "SOBHA.NS"],
+        "SUNPHARMA": "Large Cap", "DRREDDY": "Large Cap",
+        "CIPLA": "Large Cap", "DIVISLAB": "Large Cap", "AUROPHARMA": "Large Cap",
+        "LUPIN": "Mid Cap", "BIOCON": "Mid Cap",
+        "TORNTPHARM": "Mid Cap", "ALKEM": "Mid Cap", "IPCALAB": "Mid Cap",
     },
 }
 
+_NSE_ALLOWED = [
+    "NIFTY 50", "NIFTY BANK", "NIFTY IT", "NIFTY PHARMA",
+    "NIFTY AUTO", "NIFTY FMCG", "NIFTY ENERGY",
+    "NIFTY METAL", "NIFTY REALTY",
+]
 
-@app.get("/api/heatmap")
-async def get_heatmap(index: str = "NIFTY 50"):
+
+def _nse_sector(sym: str, idx: str) -> str:
+    if idx == "NIFTY 50":
+        return _NIFTY50_SECTOR.get(sym, "Other")
+    return _SECTOR_SUB.get(idx, {}).get(sym, idx.replace("NIFTY ", ""))
+
+
+@app.get("/api/nse-heatmap")
+async def get_nse_heatmap(index: str = "NIFTY 50"):
     """
-    Sector heatmap data for recharts Treemap.
-    Uses yfinance bulk download for fast multi-ticker fetch.
-    Returns nested sector → stock data with R-factor.
+    Sector heatmap using nsetools — direct NSE data.
+    One call fetches ALL stocks in an index with live prices.
     """
-    cache_key = f"heatmap_{index}"
-    cached = get_cached(cache_key, CACHE_TTL_HEATMAP)
+    cache_key = f"nse_heatmap_{index}"
+    cached = get_cached(cache_key, CACHE_TTL_NSE_HEATMAP)
     if cached:
         return cached
 
-    sector_map = SECTOR_INDICES.get(index)
-    if not sector_map:
-        return {"error": f"Unknown index '{index}'. Available: {list(SECTOR_INDICES.keys())}"}
+    if index not in _NSE_ALLOWED:
+        return {"error": f"Unknown index '{index}'. Available: {_NSE_ALLOWED}"}
 
     try:
-        # Collect all tickers for bulk download
-        all_tickers = []
-        for tickers in sector_map.values():
-            all_tickers.extend(tickers)
+        from nsetools import Nse
+        nse = Nse()
 
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_tickers = []
-        for t in all_tickers:
-            if t not in seen:
-                seen.add(t)
-                unique_tickers.append(t)
+        # Single call → all stocks + index quote
+        raw = nse.get_stock_quote_in_index(index=index, include_index=True)
 
-        # ── Bulk download via yfinance (single network call for all tickers) ──
-        bulk_data = yf.download(
-            tickers=unique_tickers,
-            period="2d",
-            interval="1d",
-            group_by="ticker",
-            threads=True,
-            progress=False,
-        )
+        if not raw or not isinstance(raw, list) or len(raw) < 2:
+            return {"error": "NSE returned empty data. Market may be closed.", "index": index}
 
-        # ── Fetch market-cap info in parallel via yf.Tickers ──
-        tickers_obj = yf.Tickers(" ".join(unique_tickers))
+        # Separate index quote from stock quotes
+        index_quote = None
+        stock_quotes = []
+        for item in raw:
+            sym = item.get("symbol", "")
+            if item.get("priority") == 1 or sym == index or sym.startswith("NIFTY"):
+                index_quote = item
+            else:
+                stock_quotes.append(item)
 
-        # Build per-ticker data
-        ticker_data = {}
-        for symbol in unique_tickers:
-            try:
-                # Get price data from bulk download
-                if len(unique_tickers) == 1:
-                    sym_data = bulk_data
-                else:
-                    sym_data = bulk_data[symbol] if symbol in bulk_data.columns.get_level_values(0) else None
+        # Index-level % change for R-factor baseline
+        idx_pchange = 0.0
+        if index_quote:
+            idx_pchange = float(index_quote.get("pChange", 0) or 0)
+        if idx_pchange == 0 and stock_quotes:
+            idx_pchange = sum(float(q.get("pChange", 0) or 0) for q in stock_quotes) / len(stock_quotes)
 
-                if sym_data is None or sym_data.empty or len(sym_data) < 1:
-                    continue
-
-                # Drop NaN rows
-                sym_data = sym_data.dropna(subset=["Close"])
-                if len(sym_data) < 1:
-                    continue
-
-                current_price = float(sym_data["Close"].iloc[-1])
-                prev_close = float(sym_data["Close"].iloc[-2]) if len(sym_data) > 1 else current_price
-                change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
-
-                # Get market cap from info (cached internally by yfinance)
-                try:
-                    info = tickers_obj.tickers[symbol].info
-                    market_cap = info.get("marketCap", 0) or 0
-                    short_name = info.get("shortName", symbol.replace(".NS", ""))
-                except Exception:
-                    market_cap = 1_000_000_000  # Default 1B if unavailable
-                    short_name = symbol.replace(".NS", "")
-
-                ticker_data[symbol] = {
-                    "symbol": symbol.replace(".NS", ""),
-                    "shortName": short_name,
-                    "lastPrice": round(current_price, 2),
-                    "prevClose": round(prev_close, 2),
-                    "pChange": round(change_pct, 2),
-                    "marketCap": market_cap,
-                    "volume": int(sym_data["Volume"].iloc[-1]) if "Volume" in sym_data else 0,
-                }
-            except Exception:
+        # Group by sector
+        buckets: dict = {}
+        for q in stock_quotes:
+            sym = q.get("symbol", "")
+            if not sym:
                 continue
 
-        # ── Compute index-level average change for R-factor baseline ──
-        all_changes = [d["pChange"] for d in ticker_data.values()]
-        index_change = sum(all_changes) / len(all_changes) if all_changes else 0
+            pchange = float(q.get("pChange", 0) or 0)
+            last_price = float(q.get("lastPrice", 0) or 0)
+            volume = int(q.get("totalTradedVolume", 0) or 0)
+            traded_val = float(q.get("totalTradedValue", 0) or 0)
 
-        # ── Build nested sector structure for recharts Treemap ──
+            # Use traded value as size proxy (correlates with market cap)
+            size = max(int(traded_val), int(volume * last_price), 1_000_000)
+
+            r_factor = round(pchange / idx_pchange, 2) if idx_pchange != 0 else 0
+
+            sector = _nse_sector(sym, index)
+            if sector not in buckets:
+                buckets[sector] = []
+
+            buckets[sector].append({
+                "name": sym,
+                "shortName": sym,
+                "size": size,
+                "change": round(pchange, 2),
+                "lastPrice": round(last_price, 2),
+                "volume": volume,
+                "rFactor": r_factor,
+                "marketCap": size,
+            })
+
+        # Build nested sectors
         sectors = []
-        for sector_name, tickers in sector_map.items():
-            children = []
-            sector_changes = []
-            for t in tickers:
-                if t in ticker_data:
-                    d = ticker_data[t]
-                    sector_changes.append(d["pChange"])
-                    # R-factor = stock change / index change
-                    r_factor = round(d["pChange"] / index_change, 2) if index_change != 0 else 0
-                    children.append({
-                        "name": d["symbol"],
-                        "shortName": d["shortName"],
-                        "size": max(d["marketCap"], 1_000_000),  # Ensure minimum for visibility
-                        "change": d["pChange"],
-                        "lastPrice": d["lastPrice"],
-                        "volume": d["volume"],
-                        "rFactor": r_factor,
-                        "marketCap": d["marketCap"],
-                    })
-            if children:
-                sector_avg = round(sum(sector_changes) / len(sector_changes), 2) if sector_changes else 0
-                sectors.append({
-                    "name": sector_name,
-                    "change": sector_avg,
-                    "children": sorted(children, key=lambda x: x["size"], reverse=True),
-                })
+        for name, children in buckets.items():
+            if not children:
+                continue
+            avg = round(sum(c["change"] for c in children) / len(children), 2)
+            sectors.append({
+                "name": name,
+                "change": avg,
+                "children": sorted(children, key=lambda x: x["size"], reverse=True),
+            })
 
         result = {
             "index": index,
-            "indexChange": round(index_change, 2),
+            "indexChange": round(idx_pchange, 2),
             "sectors": sorted(sectors, key=lambda s: sum(c["size"] for c in s["children"]), reverse=True),
-            "totalStocks": len(ticker_data),
+            "totalStocks": sum(len(s["children"]) for s in sectors),
             "timestamp": datetime.now().isoformat(),
-            "availableIndices": list(SECTOR_INDICES.keys()),
+            "availableIndices": _NSE_ALLOWED,
+            "source": "nsetools",
         }
         set_cache(cache_key, result)
         return result
 
+    except ImportError:
+        return {"error": "nsetools not installed. Run: pip install nsetools==2.0.1", "index": index}
     except Exception as e:
         return {"error": str(e), "index": index}
 
