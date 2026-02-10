@@ -672,11 +672,29 @@ async def get_nse_heatmap(index: str = "NIFTY 50"):
         return {"error": f"Unknown index '{index}'. Available: {_NSE_ALLOWED}"}
 
     try:
+        import sys, io, os
         from nsetools import Nse
-        nse = Nse()
 
-        # Single call → all stocks + index quote
-        raw = nse.get_stock_quote_in_index(index=index, include_index=True)
+        # nsetools prints Unicode chars (✓) internally which crash on Windows
+        # when the console encoding isn't UTF-8. Redirect stdout/stderr
+        # temporarily to suppress the encoding error.
+        _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+        try:
+            if os.name == "nt":
+                sys.stdout = io.TextIOWrapper(
+                    sys.stdout.buffer if hasattr(sys.stdout, "buffer") else io.BytesIO(),
+                    encoding="utf-8", errors="replace",
+                )
+                sys.stderr = io.TextIOWrapper(
+                    sys.stderr.buffer if hasattr(sys.stderr, "buffer") else io.BytesIO(),
+                    encoding="utf-8", errors="replace",
+                )
+
+            nse = Nse()
+            # Single call → all stocks + index quote
+            raw = nse.get_stock_quote_in_index(index=index, include_index=True)
+        finally:
+            sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
 
         if not raw or not isinstance(raw, list) or len(raw) < 2:
             return {"error": "NSE returned empty data. Market may be closed.", "index": index}
