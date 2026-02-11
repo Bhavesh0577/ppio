@@ -657,11 +657,29 @@ def _nse_sector(sym: str, idx: str) -> str:
     return _SECTOR_SUB.get(idx, {}).get(sym, idx.replace("NIFTY ", ""))
 
 
+def _fetch_nse_index(index: str):
+    """Blocking helper — runs in threadpool via FastAPI."""
+    import os, sys, io
+    from nsetools import Nse
+
+    # Suppress nsetools Unicode print on Windows
+    _orig_out, _orig_err = sys.stdout, sys.stderr
+    try:
+        if os.name == "nt":
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+        nse = Nse()
+        return nse.get_stock_quote_in_index(index=index, include_index=True)
+    finally:
+        sys.stdout, sys.stderr = _orig_out, _orig_err
+
+
 @app.get("/api/nse-heatmap")
-async def get_nse_heatmap(index: str = "NIFTY 50"):
+def get_nse_heatmap(index: str = "NIFTY 50"):
     """
     Sector heatmap using nsetools — direct NSE data.
-    One call fetches ALL stocks in an index with live prices.
+    Uses `def` (not async) so FastAPI runs it in a threadpool,
+    preventing the blocking nsetools HTTP call from freezing the event loop.
     """
     cache_key = f"nse_heatmap_{index}"
     cached = get_cached(cache_key, CACHE_TTL_NSE_HEATMAP)
@@ -672,29 +690,7 @@ async def get_nse_heatmap(index: str = "NIFTY 50"):
         return {"error": f"Unknown index '{index}'. Available: {_NSE_ALLOWED}"}
 
     try:
-        import sys, io, os
-        from nsetools import Nse
-
-        # nsetools prints Unicode chars (✓) internally which crash on Windows
-        # when the console encoding isn't UTF-8. Redirect stdout/stderr
-        # temporarily to suppress the encoding error.
-        _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
-        try:
-            if os.name == "nt":
-                sys.stdout = io.TextIOWrapper(
-                    sys.stdout.buffer if hasattr(sys.stdout, "buffer") else io.BytesIO(),
-                    encoding="utf-8", errors="replace",
-                )
-                sys.stderr = io.TextIOWrapper(
-                    sys.stderr.buffer if hasattr(sys.stderr, "buffer") else io.BytesIO(),
-                    encoding="utf-8", errors="replace",
-                )
-
-            nse = Nse()
-            # Single call → all stocks + index quote
-            raw = nse.get_stock_quote_in_index(index=index, include_index=True)
-        finally:
-            sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
+        raw = _fetch_nse_index(index)
 
         if not raw or not isinstance(raw, list) or len(raw) < 2:
             return {"error": "NSE returned empty data. Market may be closed.", "index": index}
