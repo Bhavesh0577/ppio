@@ -668,14 +668,14 @@ def _fetch_nse_index(index: str):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
     }
     
     api_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
     }
 
     session = requests.Session()
@@ -687,13 +687,89 @@ def _fetch_nse_index(index: str):
         pass
 
     url = f"https://www.nseindia.com/api/equity-stockIndices?index={quote(index)}"
-    r = session.get(url, headers=api_headers, timeout=10)
+    # Using a slightly different approach: let requests handle headers as standard as possible
+    r = session.get(url, headers={"User-Agent": api_headers["User-Agent"]}, timeout=10)
     
-    if r.status_code != 200:
-        raise Exception(f"NSE returned status code {r.status_code}")
+    if r.status_code == 200:
+        try:
+            data = r.json()
+            return data.get("data", [])
+        except Exception:
+            pass
+            
+    # --- FALLBACK FOR CLOUD HOSTING (Render/AWS/GCP) WHICH NSE BLOCKS ---
+    # Since NSE blocks cloud Datacenter IPs from direct scraping, we fallback to yfinance for the major indices.
+    print(f"NSE block detected (status {r.status_code}). Falling back to yfinance for {index}...")
+    import yfinance as yf
+    
+    # Map indices to default sets of top symbols as fallback
+    fallback_symbols = []
+    if index == "NIFTY 50":
+        fallback_symbols = [
+            "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS", "SBIN.NS", "INFY.NS", 
+            "ITC.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS", "KOTAKBANK.NS", "AXISBANK.NS", "HCLTECH.NS", 
+            "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS", "ONGC.NS", "NTPC.NS", "M&M.NS", "POWERGRID.NS", 
+            "TATASTEEL.NS", "TITAN.NS", "BAJAJFINSV.NS", "ASIANPAINT.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", 
+            "JSWSTEEL.NS", "GRASIM.NS", "TECHM.NS", "WIPRO.NS", "HINDALCO.NS", "DIVISLAB.NS", "DRREDDY.NS", 
+            "CIPLA.NS", "APOLLOHOSP.NS", "ADANIPORTS.NS", "COALINDIA.NS", "BRITANNIA.NS", "TATACONSUM.NS", 
+            "EICHERMOT.NS", "INDUSINDBK.NS", "BAJAJ-AUTO.NS", "SHRIRAMFIN.NS", "ADANIENT.NS"
+        ]
+    elif index == "NIFTY BANK":
+         fallback_symbols = [
+             "HDFCBANK.NS", "ICICIBANK.NS", "AXISBANK.NS", "KOTAKBANK.NS", "SBIN.NS", "INDUSINDBK.NS", 
+             "BANKBARODA.NS", "AUBANK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANDHANBNK.NS"
+         ]
+    else:
+        # Generic fallback
+        fallback_symbols = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS"]
+        
+    if not fallback_symbols:
+        return []
 
-    data = r.json()
-    return data.get("data", [])
+    # Batch download from yfinance is very fast
+    try:
+        yf_data = yf.download(fallback_symbols, period="2d", progress=False)
+        formatted_data = []
+        
+        # Build index quote mock
+        formatted_data.append({
+            "symbol": index,
+            "priority": 1,
+            "lastPrice": 0,
+            "pChange": 0,
+        })
+        
+        for sym in fallback_symbols:
+            nse_sym = sym.replace(".NS", "")
+            try:
+                # Use multi-index columns handling for yfinance 
+                if len(fallback_symbols) > 1:
+                    close_prices = yf_data['Close'][sym].dropna().values
+                    volumes = yf_data['Volume'][sym].dropna().values
+                else:
+                    close_prices = yf_data['Close'].dropna().values
+                    volumes = yf_data['Volume'].dropna().values
+                    
+                if len(close_prices) >= 2:
+                    current = float(close_prices[-1])
+                    prev = float(close_prices[-2])
+                    vol = int(volumes[-1]) if len(volumes) > 0 else 0
+                    pchange = ((current - prev) / prev) * 100
+                    
+                    formatted_data.append({
+                        "symbol": nse_sym,
+                        "lastPrice": current,
+                        "pChange": pchange,
+                        "totalTradedVolume": vol,
+                        "totalTradedValue": current * vol
+                    })
+            except Exception:
+                continue
+                
+        return formatted_data
+    except Exception as e:
+        print(f"Fallback failed: {e}")
+        return []
 
 
 @app.get("/api/nse-heatmap")
