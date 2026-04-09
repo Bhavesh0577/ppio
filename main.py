@@ -658,20 +658,31 @@ def _nse_sector(sym: str, idx: str) -> str:
 
 
 def _fetch_nse_index(index: str):
-    """Blocking helper — runs in threadpool via FastAPI."""
-    import os, sys, io
-    from nsetools import Nse
+    """Blocking helper — fetches directly from modern NSE endpoints."""
+    import requests
+    from urllib.parse import quote
 
-    # Suppress nsetools Unicode print on Windows
-    _orig_out, _orig_err = sys.stdout, sys.stderr
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+
+    session = requests.Session()
+    # Provide a realistic session setup
     try:
-        if os.name == "nt":
-            sys.stdout = io.StringIO()
-            sys.stderr = io.StringIO()
-        nse = Nse()
-        return nse.get_stock_quote_in_index(index=index, include_index=True)
-    finally:
-        sys.stdout, sys.stderr = _orig_out, _orig_err
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+    except Exception:
+        pass
+
+    url = f"https://www.nseindia.com/api/equity-stockIndices?index={quote(index)}"
+    r = session.get(url, headers=headers, timeout=10)
+    
+    if r.status_code != 200:
+        raise Exception(f"NSE returned status code {r.status_code}")
+
+    data = r.json()
+    return data.get("data", [])
 
 
 @app.get("/api/nse-heatmap")
@@ -763,14 +774,14 @@ def get_nse_heatmap(index: str = "NIFTY 50"):
             "totalStocks": sum(len(s["children"]) for s in sectors),
             "timestamp": datetime.now().isoformat(),
             "availableIndices": _NSE_ALLOWED,
-            "source": "nsetools",
+            "source": "nse-direct",
         }
         set_cache(cache_key, result)
         return result
 
-    except ImportError:
-        return {"error": "nsetools not installed. Run: pip install nsetools==2.0.1", "index": index}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"error": str(e), "index": index}
 
 
