@@ -661,22 +661,33 @@ def _fetch_nse_index(index: str):
     """Blocking helper — fetches directly from modern NSE endpoints."""
     import requests
     from urllib.parse import quote
+    import time
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    # Broad, realistic headers
+    dl_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+    }
+    
+    api_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
     }
 
     session = requests.Session()
     # Provide a realistic session setup
     try:
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        session.get("https://www.nseindia.com", headers=dl_headers, timeout=10)
+        time.sleep(0.5)  # Add a tiny delay to mimic human behavior
     except Exception:
         pass
 
     url = f"https://www.nseindia.com/api/equity-stockIndices?index={quote(index)}"
-    r = session.get(url, headers=headers, timeout=10)
+    r = session.get(url, headers=api_headers, timeout=10)
     
     if r.status_code != 200:
         raise Exception(f"NSE returned status code {r.status_code}")
